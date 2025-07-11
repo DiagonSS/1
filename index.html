@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gardener CRM</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Supabase Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- FullCalendar -->
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/main.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/main.min.js"></script>
+  <style>
+    #calendar {
+      max-width: 900px;
+      margin: 20px auto;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div class="container mx-auto p-4">
+    <h1 class="text-3xl font-bold text-center mb-6">Gardener CRM</h1>
+
+    <!-- Add Client Form -->
+    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+      <h2 class="text-xl font-semibold mb-4">Add New Client</h2>
+      <div class="grid grid-cols-1 gap-4">
+        <input id="clientName" type="text" placeholder="Client Name" class="border p-2 rounded" required>
+        <input id="clientPhone" type="text" placeholder="Phone (optional)" class="border p-2 rounded">
+        <input id="clientEmail" type="email" placeholder="Email (optional)" class="border p-2 rounded">
+        <input id="clientAddress" type="text" placeholder="Address" class="border p-2 rounded" required>
+        <textarea id="clientNotes" placeholder="Notes (optional)" class="border p-2 rounded"></textarea>
+        <input id="clientNextVisit" type="date" placeholder="Next Visit (optional)" class="border p-2 rounded">
+        <button onclick="addClient()" class="bg-green-500 text-white p-2 rounded hover:bg-green-600">Add Client</button>
+      </div>
+    </div>
+
+    <!-- Schedule Job Form -->
+    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+      <h2 class="text-xl font-semibold mb-4">Schedule Job</h2>
+      <div class="grid grid-cols-1 gap-4">
+        <select id="jobClient" class="border p-2 rounded">
+          <option value="">Select Client</option>
+        </select>
+        <input id="jobDescription" type="text" placeholder="Description (e.g., Lawn Mowing)" class="border p-2 rounded">
+        <input id="jobPrice" type="number" step="0.01" placeholder="Price (optional)" class="border p-2 rounded">
+        <input id="jobPhotoUrl" type="text" placeholder="Photo URL (optional)" class="border p-2 rounded">
+        <input id="jobDate" type="date" class="border p-2 rounded">
+        <button onclick="scheduleJob()" class="bg-blue-500 text-white p-2 rounded hover:bg-blue-600">Schedule Job</button>
+      </div>
+    </div>
+
+    <!-- Calendar -->
+    <div id="calendar"></div>
+
+    <!-- Job Details Modal -->
+    <div id="jobModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center">
+      <div class="bg-white p-6 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold mb-4">Job Details</h2>
+        <p id="modalJobDetails"></p>
+        <div class="mt-4">
+          <button onclick="rescheduleJob()" class="bg-yellow-500 text-white p-2 rounded mr-2">Reschedule</button>
+          <button onclick="postponeJob()" class="bg-orange-500 text-white p-2 rounded mr-2">Postpone</button>
+          <button onclick="cancelJob()" class="bg-red-500 text-white p-2 rounded mr-2">Cancel</button>
+          <button onclick="closeModal()" class="bg-gray-500 text-white p-2 rounded">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Initialize Supabase
+    const supabase = Supabase.createClient('https://kuxbbvkmribqlyfwqerl.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1eGJidmttcmlicWx5ZndxZXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIwODEzODcsImV4cCI6MjA2NzY1NzM4N30.ZWJyDolbW_Ma2txriX0CGS63bc8bss9YTTGq0Kcfex8');
+
+    let selectedJobId = null;
+
+    // Initialize Calendar
+    document.addEventListener('DOMContentLoaded', async () => {
+      const calendarEl = document.getElementById('calendar');
+      const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        events: await fetchJobs(),
+        eventClick: function(info) {
+          selectedJobId = info.event.id;
+          const job = info.event.extendedProps;
+          document.getElementById('modalJobDetails').innerHTML = `
+            <strong>Client:</strong> ${job.client_name}<br>
+            <strong>Description:</strong> ${job.description}<br>
+            <strong>Price:</strong> ${job.price ? '€' + job.price : 'N/A'}<br>
+            <strong>Date:</strong> ${info.event.start.toISOString().split('T')[0]}<br>
+            <strong>Status:</strong> ${job.status}
+          `;
+          document.getElementById('jobModal').classList.remove('hidden');
+        }
+      });
+      calendar.render();
+      await populateClients();
+    });
+
+    // Fetch clients and populate dropdown
+    async function populateClients() {
+      const { data, error } = await supabase.from('clients').select('*');
+      if (error) {
+        console.error('Error fetching clients:', error);
+        return;
+      }
+      const clientSelect = document.getElementById('jobClient');
+      clientSelect.innerHTML = '<option value="">Select Client</option>';
+      data.forEach(client => {
+        const option = document.createElement('option');
+        option.value = client.id;
+        option.textContent = client.name;
+        clientSelect.appendChild(option);
+      });
+    }
+
+    // Fetch jobs for calendar
+    async function fetchJobs() {
+      const { data, error } = await supabase
+        .from('jobs')
+        .select('id, client_id, description, price, date, status, clients(name)')
+        .eq('status', 'Scheduled');
+      if (error) {
+        console.error('Error fetching jobs:', error);
+        return [];
+      }
+      return data.map(job => ({
+        id: job.id,
+        title: `${job.clients.name} - ${job.description}`,
+        start: job.date,
+        backgroundColor: job.status === 'Scheduled' ? '#10B981' : job.status === 'Postponed' ? '#F59E0B' : '#EF4444',
+        extendedProps: {
+          client_name: job.clients.name,
+          description: job.description,
+          price: job.price,
+          status: job.status
+        }
+      }));
+    }
+
+    // Add client
+    async function addClient() {
+      const name = document.getElementById('clientName').value;
+      const phone = document.getElementById('clientPhone').value;
+      const email = document.getElementById('clientEmail').value;
+      const address = document.getElementById('clientAddress').value;
+      const notes = document.getElementById('clientNotes').value;
+      const next_visit = document.getElementById('clientNextVisit').value;
+      if (!name || !address) {
+        alert('Client name and address are required');
+        return;
+      }
+      const { error } = await supabase.from('clients').insert([{ name, phone, email, address, notes, next_visit }]);
+      if (error) {
+        console.error('Error adding client:', error);
+        alert('Error adding client');
+      } else {
+        alert('Client added successfully');
+        document.getElementById('clientName').value = '';
+        document.getElementById('clientPhone').value = '';
+        document.getElementById('clientEmail').value = '';
+        document.getElementById('clientAddress').value = '';
+        document.getElementById('clientNotes').value = '';
+        document.getElementById('clientNextVisit').value = '';
+        await populateClients();
+      }
+    }
+
+    // Schedule job
+    async function scheduleJob() {
+      const client_id = document.getElementById('jobClient').value;
+      const description = document.getElementById('jobDescription').value;
+      const price = document.getElementById('jobPrice').value;
+      const photo_url = document.getElementById('jobPhotoUrl').value;
+      const date = document.getElementById('jobDate').value;
+      if (!client_id || !description || !date) {
+        alert('Client, description, and date are required');
+        return;
+      }
+      const { error } = await supabase.from('jobs').insert([{ client_id, description, price: price || null, photo_url: photo_url || null, date, status: 'Scheduled' }]);
+      if (error) {
+        console.error('Error scheduling job:', error);
+        alert('Error scheduling job');
+      } else {
+        alert('Job scheduled successfully');
+        document.getElementById('jobClient').value = '';
+        document.getElementById('jobDescription').value = '';
+        document.getElementById('jobPrice').value = '';
+        document.getElementById('jobPhotoUrl').value = '';
+        document.getElementById('jobDate').value = '';
+        document.getElementById('calendar').innerHTML = '';
+        const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+          initialView: 'dayGridMonth',
+          events: await fetchJobs()
+        });
+        calendar.render();
+      }
+    }
+
+    // Reschedule job
+    async function rescheduleJob() {
+      const newDate = prompt('Enter new date (YYYY-MM-DD):');
+      if (newDate) {
+        const { error } = await supabase
+          .from('jobs')
+          .update({ date: newDate, status: 'Scheduled' })
+          .eq('id', selectedJobId);
+        if (error) {
+          console.error('Error rescheduling job:', error);
+          alert('Error rescheduling job');
+        } else {
+          alert('Job rescheduled successfully');
+          document.getElementById('calendar').innerHTML = '';
+          const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+            initialView: 'dayGridMonth',
+            events: await fetchJobs()
+          });
+          calendar.render();
+          closeModal();
+        }
+      }
+    }
+
+    // Postpone job
+    async function postponeJob() {
+      const { error } = await supabase
+        .from('jobs')
+        .update({ status: 'Postponed' })
+        .eq('id', selectedJobId);
+      if (error) {
+        console.error('Error postponing job:', error);
+        alert('Error postponing job');
+      } else {
+        alert('Job postponed successfully');
+        document.getElementById('calendar').innerHTML = '';
+        const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+          initialView: 'dayGridMonth',
+          events: await fetchJobs()
+        });
+        calendar.render();
+        closeModal();
+      }
+    }
+
+    // Cancel job
+    async function cancelJob() {
+      const { error } = await supabase
+        .from('jobs')
+        .update({ status: 'Cancelled' })
+        .eq('id', selectedJobId);
+      if (error) {
+        console.error('Error cancelling job:', error);
+        alert('Error cancelling job');
+      } else {
+        alert('Job cancelled successfully');
+        document.getElementById('calendar').innerHTML = '';
+        const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+          initialView: 'dayGridMonth',
+          events: await fetchJobs()
+        });
+        calendar.render();
+        closeModal();
+      }
+    }
+
+    // Close modal
+    function closeModal() {
+      document.getElementById('jobModal').classList.add('hidden');
+      selectedJobId = null;
+    }
+  </script>
+</body>
+</html>
